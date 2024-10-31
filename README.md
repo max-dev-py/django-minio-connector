@@ -13,9 +13,11 @@ pip install django-minio-connector
 
 Add configuration of Minio storage to your projects settings file:
 ```
+from django_minio_connector import MinIOStorage
+
 STORAGES = {
     "staticfiles": {
-        "BACKEND": 'django_minio_connector.storage.MinIOStorage',
+        "BACKEND": MinIOStorage,
         "OPTIONS": {
             "MINIO_ENDPOINT": 'your_minio_server_address',
             "MINIO_ROOT_USER": "your_minio_server_access_key",
@@ -46,7 +48,7 @@ STORAGES = {
         },
     },
     'default': {
-        'BACKEND': 'django_minio_connector.storage.MinIOStorage',
+        'BACKEND': MinIOStorage,
         "OPTIONS": {
             "MINIO_ENDPOINT": 'your_minio_server_address',
             "MINIO_ROOT_USER": "your_minio_server_access_key",
