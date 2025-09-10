@@ -15,81 +15,27 @@ from minio import Minio
 
 class MinioStorageFile(File):
     """
-    Class representing a file stored in Minio storage.
-
-    This class extends the base File class and provides additional methods to interact
-    with files stored in Minio storage.
-
-    Attributes:
-        Parent class attributes
-
-    Methods:
-        close(): Close the file and release the connection to Minio storage.
+    A helper class for MinIO files.
     """
 
     def close(self):
         """
-        Closes the file and releases the connection to Minio storage.
-
-        This method first calls the parent class's close method to perform any necessary cleanup,
-        then it calls the 'release_conn' method on the 'file' attribute to close the connection
-        to Minio storage.
-
-        :return: None
+        Closes the file and releases the connection to Minio.
         """
-        super(MinioStorageFile, self).close()
+        super().close()
         self.file.release_conn()
+
+
+# A global cache for MinIO client instances
+_minio_clients = {}
 
 
 class MinIOStorage(Storage):
     """
-    The constructor for MinioStorage class, which initiates the settings of the Minio server and its properties.
-
-    Parameters:
-    *args (tuple): Variable length argument list.
-    **kwargs (dict): Arbitrary keyword arguments.
-
-    Following arguments are expected in kwargs:
-    MINIO_ENDPOINT (str): MinIO service URL.
-    MINIO_ROOT_USER (str): Access key (aka user ID) of an account in the S3 service.
-    MINIO_ROOT_PASSWORD (str): Secret key (aka password) of an account in the S3 service.
-    MINIO_USE_HTTPS (bool): If True, access the S3 service over a TLS (secure) connection, Defaults to True.
-    MINIO_BUCKET_NAME (str): Name of the bucket in the minio server.
-    SESSION_TOKEN (str): Session token of an account in the S3 service, Defaults to None.
-    REGION (str): Region of an account in the S3 service, Defaults to None.
-    HTTP_CLIENT (str): Pre-configured http.client object , defaults to None.
-    CREDENTIALS (str): Pre-configured Credentials object , defaults to None.
-    CERT_CHECK (bool): Enable/Disable server certificate verification , defaults to True.
-    MINIO_BUCKET_POLICY (dict): Bucket policy for MinIO bucket, default to None.
-    MINIO_PRESIGNED_URL (bool): If True, use pre-signed URLs instead of public URLs, default to True.
-    MINIO_OVERWRITE_FILES (bool): If False, avoid overwriting files, default to False.
-
+    A Django storage backend for MinIO.
     """
 
     def __init__(self, **kwargs):
-        """
-        The constructor for MinioStorage class, which initiates the settings of the Minio server and its properties.
-
-        Parameters:
-        *args (tuple): Variable length argument list.
-        **kwargs (dict): Arbitrary keyword arguments.
-
-        Following arguments are expected in kwargs:
-        MINIO_ENDPOINT (str): MinIO service URL.
-        MINIO_ROOT_USER (str): Access key (aka user ID) of an account in the S3 service.
-        MINIO_ROOT_PASSWORD (str): Secret key (aka password) of an account in the S3 service.
-        MINIO_USE_HTTPS (bool): If True, access the S3 service over a TLS (secure) connection, Defaults to True.
-        MINIO_BUCKET_NAME (str): Name of the bucket in the minio server.
-        SESSION_TOKEN (str): Session token of an account in the S3 service, Defaults to None.
-        REGION (str): Region of an account in the S3 service, Defaults to None.
-        HTTP_CLIENT (str): Pre-configured http.client object , defaults to None.
-        CREDENTIALS (str): Pre-configured Credentials object , defaults to None.
-        CERT_CHECK (bool): Enable/Disable server certificate verification , defaults to True.
-        MINIO_BUCKET_POLICY (dict): Bucket policy for MinIO bucket, default to None.
-        MINIO_PRESIGNED_URL (bool): If True, use pre-signed URLs instead of public URLs, default to True.
-        MINIO_OVERWRITE_FILES (bool): If False, avoid overwriting files, default to False.
-
-        """
         self.endpoint = kwargs['MINIO_ENDPOINT']
         self.access_key = kwargs['MINIO_ROOT_USER']
         self.secret_key = kwargs['MINIO_ROOT_PASSWORD']
@@ -98,15 +44,17 @@ class MinIOStorage(Storage):
 
         self.session_token = kwargs.get('SESSION_TOKEN', None)
         self.region = kwargs.get('REGION', None)
-        self.http_client = kwargs.get('HTTP_CLIENT', None)  # PoolManager
-        self.credentials = kwargs.get('CREDENTIALS', None)  # Provider
-        self.cert_check = kwargs.get('CERT_CHECK', True)  # Provider
+        self.http_client = kwargs.get('HTTP_CLIENT', None)
+        self.credentials = kwargs.get('CREDENTIALS', None)
+        self.cert_check = kwargs.get('CERT_CHECK', True)
 
         self.bucket_policy = kwargs.get('MINIO_BUCKET_POLICY', None)
         self.pre_signed_url = kwargs.get('MINIO_PRESIGNED_URL', True)
         self.overwrite_files = kwargs.get('MINIO_OVERWRITE_FILES', False)
+        self.presigned_expiration = kwargs.get('MINIO_PRESIGNED_EXPIRATION', timedelta(days=1))
 
         self.minio_client = self._get_minio_client()
+        self._stat_cache = {}
 
         if not self.minio_client.bucket_exists(self.bucket_name):
             self.minio_client.make_bucket(self.bucket_name)
@@ -116,19 +64,27 @@ class MinIOStorage(Storage):
 
     def _get_minio_client(self):
         """
-            This method configures and returns a MinIO client that will be used
-            for interacting with the MinIO server.
+        Retrieves a MinIO client from the global cache or creates a new one if not available.
+        """
+        # Create a cache key based on the client configuration
+        cache_key = (
+            self.endpoint,
+            self.access_key,
+            self.secret_key,
+            self.secure,
+            self.session_token,
+            self.region,
+            self.http_client,
+            self.credentials,
+            self.cert_check,
+        )
 
-            The client is configured using the instance variables: endpoint, access_key,
-            secret_key, secure, session_token, region, http_client, credentials and cert_check.
+        # Check if a client is already cached for this configuration
+        if cache_key in _minio_clients:
+            return _minio_clients[cache_key]
 
-            Returns:
-                minio.Minio: An instance of a Minio client. This client has been configured
-                             with the attributes provided during the initialization of the
-                             MinIOStorage class and is ready for making operations against
-                             the MinIO server.
-            """
-        return Minio(
+        # If not cached, create a new client
+        minio_client = Minio(
             endpoint=self.endpoint,
             access_key=self.access_key,
             secret_key=self.secret_key,
@@ -140,44 +96,20 @@ class MinIOStorage(Storage):
             cert_check=self.cert_check
         )
 
-    def _open(self, name, mode='rb'):
-        """
-        Opens the file associated with the specified file name in a particular mode.
+        # Cache the new client
+        _minio_clients[cache_key] = minio_client
 
-        :param name: str
-            The name of the file to open
-        :param mode: str, optional
-            The mode in which to open the file. By default, it is 'rb' (read binary).
-        :return: MinioStorageFile
-            The MinioStorageFile object associated with the specified file name.
-        :param name: the name of the file to open
-        :param mode: the mode in which to open the file (default is 'rb')
-        :return: MinioStorageFile object associated with the specified file name
-        """
+        return minio_client
+
+    def _open(self, name, mode='rb'):
         data = self.minio_client.get_object(self.bucket_name, name)
         return MinioStorageFile(data, name)
 
     def _save(self, name, content):
-        """
-        Saves a file to the MinIO bucket.
-
-        This method checks if a file with a given name exists. If it exists and you do not want to overwrite files,
-        a new name is generated, otherwise the file is overwritten.
-        Django has self system for checking if a file exists.
-
-        Args:
-            name (str): The name of the file to save.
-            content (BinaryIO): the content of the file to save.
-
-        Returns:
-            str: The final name under which the content file was saved.
-        """
         if self.exists(name) and not self.overwrite_files:
             name = self.get_available_name(name)
 
         content.seek(0)
-
-        # Guess the mimetype of your file
         content_type = mimetypes.guess_type(name)[0]
 
         self.minio_client.put_object(
@@ -185,59 +117,32 @@ class MinIOStorage(Storage):
             name,
             content,
             content.size,
-            content_type=content_type,  # Add the content_type here
+            content_type=content_type,
         )
+
+        if name in self._stat_cache:
+            del self._stat_cache[name]
 
         return name
 
     def delete(self, name):
-        """
-        Deletes the file with a specified name from the MinIO storage.
-
-        This function uses the MinIO client to remove the specified object from the storage.
-        The file is defined by its name and if it exists in the storage, it will be permanently deleted.
-
-        Args:
-            name (str): The name of the file to delete.
-        """
         self.minio_client.remove_object(self.bucket_name, name)
+        if name in self._stat_cache:
+            del self._stat_cache[name]
 
     def exists(self, name):
         """
-        Checks if the file with the given name exists in the MinIO storage.
-
-        This method uses the MinIO client to retrieve the meta-data of an object
-        identified by its name. If the object exists, stat_object raises no
-        exception and the method returns True, otherwise False.
-
-        Args:
-            name (str): The name of the file to check for its existence.
-
-        Returns:
-            bool: True if the file exists in MinIO storage; False otherwise.
+        Checks if a file with the given name exists in the MinIO storage.
         """
         try:
             self.get_stat(name)
             return True
-        except (Exception,):
+        except Exception:  # Specifically, S3Error: S3 operation failed; code: NoSuchKey
             return False
 
     def get_accessed_time(self, name):
         """
-        Returns the last accessed time of the file with a given name from the MinIO storage.
-
-        This method uses the MinIO client's `stat_object` method to retrieve the metadata of a file,
-        primarily the last accessed time.
-
-        Args:
-            name (str): The name of the file whose accessed time is to be retrieved.
-
-        Returns:
-            datetime.datetime: A datetime object representing the last accessed time of the file.
-            If the Django setting USE_TZ is True, the time is made aware by the Django timezone.
-
-        Raises:
-            MinioException: An error occurred in retrieving the time.
+        Returns the last accessed time of the file.
         """
         time = self.get_stat(name).last_modified
         if not settings.USE_TZ:
@@ -246,36 +151,21 @@ class MinIOStorage(Storage):
 
     def get_created_time(self, name):
         """
-        Returns the creation time of the file with a given name from the MinIO storage.
-
-        This method utilizes the `get_accessed_time` method to fetch the creation time of a file.
-
-        Args:
-            name (str): The name of the file whose creation time is to be retrieved.
-
-        Returns:
-            datetime.datetime: A datetime object showing the creation time of the file.
-            If the Django setting USE_TZ is True, the time is made aware by the Django timezone.
+        Returns the creation time of the file.
         """
         return self.get_accessed_time(name)
 
     def get_stat(self, name):
         """
-        Retrieves metadata of a specified file from the MinIO storage.
-
-        This method uses MinIO client's `stat_object` method to retrieve the metadata
-        of a file identified by its name.
-
-        Args:
-            name (str): The name of the file whose metadata is to be retrieved.
-
-        Returns:
-            Object: An instance representing the metadata of the specified file.
-
-        Raises:
-            MinioException: An error occurred while retrieving the metadata.
+        Retrieves metadata of a file from MinIO, using an internal cache.
         """
-        return self.minio_client.stat_object(self.bucket_name, name)
+        if name not in self._stat_cache:
+            try:
+                self._stat_cache[name] = self.minio_client.stat_object(self.bucket_name, name)
+            except Exception as e:
+                # The object does not exist. Re-raise the exception.
+                raise e
+        return self._stat_cache[name]
 
     def get_available_name(self, name, max_length=1024):
         """
@@ -324,7 +214,7 @@ class MinIOStorage(Storage):
         """
         if self.pre_signed_url:
             url = self.minio_client.get_presigned_url(
-                "GET", self.bucket_name, name, expires=timedelta(days=1),
+                "GET", self.bucket_name, name, expires=self.presigned_expiration,
             )
         else:
             url = f'{"https://" if self.secure else "http://"}{self.endpoint}/{self.bucket_name}/{name}'
