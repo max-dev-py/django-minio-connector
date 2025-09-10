@@ -70,4 +70,32 @@ More information about file storages can be found at [Django Docs](https://docs.
 
 Description of STORAGE settings [Settings](https://docs.djangoproject.com/en/5.1/ref/settings/#storages)
 
+Logging
+-------
+The library uses Python's standard `logging` module to log information about its operations. You can configure the logging level in your Django project's `settings.py` to see these messages.
+
+The logger name is `django_minio_connector.storage`.
+
+**Example `settings.py` configuration:**
+
+```python
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+        },
+    },
+    'loggers': {
+        'django_minio_connector.storage': {
+            'handlers': ['console'],
+            'level': 'DEBUG',  # Or 'INFO' for less verbosity
+        },
+    },
+}
+```
+*   **INFO level** will show high-level operations like file saving, deletion, and bucket creation.
+*   **DEBUG level** will show detailed information, including cache hits/misses and exceptions, which is useful for troubleshooting.
+
 Currently tested only at Django 5.1. Does not work on earlier versions because the DEFAULT_FILE_STORAGE and STATICFILES_STORAGE settings is removed.

@@ -9,8 +9,12 @@ from random import randrange
 from django.conf import settings
 from django.core.files import File
 from django.core.files.storage import Storage
+import logging
+
 from django.utils import timezone
 from minio import Minio
+
+logger = logging.getLogger(__name__)
 
 
 class MinioStorageFile(File):
@@ -58,6 +62,7 @@ class MinIOStorage(Storage):
 
         if not self.minio_client.bucket_exists(self.bucket_name):
             self.minio_client.make_bucket(self.bucket_name)
+            logger.info(f"Bucket '{self.bucket_name}' created.")
 
         if self.bucket_policy:
             self.minio_client.set_bucket_policy(self.bucket_name, json.dumps(self.bucket_policy))
@@ -81,6 +86,7 @@ class MinIOStorage(Storage):
 
         # Check if a client is already cached for this configuration
         if cache_key in _minio_clients:
+            logger.debug(f"Reusing cached MinIO client for endpoint '{self.endpoint}'")
             return _minio_clients[cache_key]
 
         # If not cached, create a new client
@@ -98,6 +104,7 @@ class MinIOStorage(Storage):
 
         # Cache the new client
         _minio_clients[cache_key] = minio_client
+        logger.info(f"New MinIO client created for endpoint '{self.endpoint}'")
 
         return minio_client
 
@@ -123,12 +130,14 @@ class MinIOStorage(Storage):
         if name in self._stat_cache:
             del self._stat_cache[name]
 
+        logger.info(f"File '{name}' saved to bucket '{self.bucket_name}'.")
         return name
 
     def delete(self, name):
         self.minio_client.remove_object(self.bucket_name, name)
         if name in self._stat_cache:
             del self._stat_cache[name]
+        logger.info(f"File '{name}' deleted from bucket '{self.bucket_name}'.")
 
     def exists(self, name):
         """
@@ -136,8 +145,10 @@ class MinIOStorage(Storage):
         """
         try:
             self.get_stat(name)
+            logger.debug(f"File '{name}' found in bucket '{self.bucket_name}'.")
             return True
-        except Exception:  # Specifically, S3Error: S3 operation failed; code: NoSuchKey
+        except Exception as e:  # Specifically, S3Error: S3 operation failed; code: NoSuchKey
+            logger.debug(f"File '{name}' not found in bucket '{self.bucket_name}'. Exception: {e}")
             return False
 
     def get_accessed_time(self, name):
@@ -159,13 +170,18 @@ class MinIOStorage(Storage):
         """
         Retrieves metadata of a file from MinIO, using an internal cache.
         """
-        if name not in self._stat_cache:
-            try:
-                self._stat_cache[name] = self.minio_client.stat_object(self.bucket_name, name)
-            except Exception as e:
-                # The object does not exist. Re-raise the exception.
-                raise e
-        return self._stat_cache[name]
+        if name in self._stat_cache:
+            logger.debug(f"Found stat for '{name}' in cache.")
+            return self._stat_cache[name]
+
+        logger.debug(f"Stat for '{name}' not in cache. Fetching from server.")
+        try:
+            stat = self.minio_client.stat_object(self.bucket_name, name)
+            self._stat_cache[name] = stat
+            return stat
+        except Exception as e:
+            # The object does not exist. Re-raise the exception.
+            raise e
 
     def get_available_name(self, name, max_length=1024):
         """
